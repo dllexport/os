@@ -1,77 +1,147 @@
 %include "bootdef.inc"
 
+%define PAGE_PRESENT    (1 << 0)
+%define PAGE_WRITE      (1 << 1)
+ 
+%define CODE_SEG     0x0008
+%define DATA_SEG     0x0010
+ 
 SECTION LOADER vstart=LOADER_BASE_ADDR
 
-    jmp loader_start					; 此处的物理地址是:
+    jmp SwitchToLongMode
 
-; 64位gdt[0]
-;0   00      0
-;1   TI_GDT  RPL0
-;2   TI_GDT  RPL0
-;3   TI_GDT  RPL0
-GDT_BASE:           dd 0x0, 0x0
-CODE_DESC:          dd 0x0000FFFF,  DESC_CODE_HIGH4
-DATA_STACK_DESC:    dd 0x0000FFFF,  DESC_DATA_HIGH4
-
-;limit=(0xbffff-0xb8000)/4k=0x7 
-; 此时dpl已改为0
-VIDEO_DESC:         dd 0x80000007,  DESC_VIDEO_HIGH4	
-
-
-    GDT_SIZE    equ $ - GDT_BASE
-    GDT_LIMIT   equ GDT_BASE - 1
-
-    ; dq 为两个quad 8bytes
-    times 60 dq 0
-
-SELECTOR_CODE equ (0x0001<<3) + TI_GDT + RPL0    ; 相当于(CODE_DESC - GDT_BASE)/8 + TI_GDT + RPL0
-
-SELECTOR_DATA equ (0x0002<<3) + TI_GDT + RPL0	 ; 同上
-
-SELECTOR_VIDEO equ (0x0003<<3) + TI_GDT + RPL0	 ; 同上 
-
-    GDT_PTR dw GDT_LIMIT 
-            dd GDT_BASE
-
-    loadermsg db '2 loader in real.'
-
-loader_start:
-
-    mov	 sp, LOADER_BASE_ADDR
-    mov	 bp, loadermsg           ; ES:BP = 字符串地址
-    mov	 cx, 17			 ; CX = 字符串长度
-    mov	 ax, 0x1301		 ; AH = 13,  AL = 01h
-    mov	 bx, 0x001f		 ; 页号为0(BH = 0) 蓝底粉红字(BL = 1fh)
-    mov	 dx, 0x1800		 ;
-    int	 0x10                    ; 10h 号中断
-
-
-    ; A20 low开始第一个位置设置1
-    in al,0x92
-    or al,00000010B
-    out 0x92,al
-
-    ;载入gdt
-    lgdt [GDT_PTR]
-
-    ;设置cr0
-    mov eax, cr0
-    xor eax, 0x01
-    mov cr0, eax
-    
-    ;跳进保护模式的代码
-    jmp  SELECTOR_CODE:protected_mode_start
-
-[bits 32]
-protected_mode_start:
-   mov ax, SELECTOR_DATA
-   mov ds, ax
-   mov es, ax
-   mov ss, ax
-   mov esp, LOADER_BASE_ADDR
-   mov ax, SELECTOR_VIDEO
-   mov gs, ax
-
-   mov byte [gs:160], 'P'
-
-   jmp $
+ALIGN 4
+IDT:
+    .Length       dw 0
+    .Base         dd 0
+ 
+; Function to switch directly to long mode from real mode.
+; Identity maps the first 2MiB.
+; Uses Intel syntax.
+ 
+; es:edi    Should point to a valid page-aligned 16KiB buffer, for the PML4, PDPT, PD and a PT.
+; ss:esp    Should point to memory that can be used as a small (1 uint32_t) stack
+ 
+SwitchToLongMode:
+    mov edi, FREE_SPACE
+    ; Zero out the 16KiB buffer.
+    ; Since we are doing a rep stosd, count should be bytes/4.   
+    push di                           ; REP STOSD alters DI.
+    mov ecx, 0x1000
+    xor eax, eax
+    cld
+    rep stosd
+    pop di                            ; Get DI back.
+ 
+ 
+    ; Build the Page Map Level 4.
+    ; es:di points to the Page Map Level 4 table.
+    lea eax, [es:di + 0x1000]         ; Put the address of the Page Directory Pointer Table in to EAX.
+    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writable flag.
+    mov [es:di], eax                  ; Store the value of EAX as the first PML4E.
+ 
+ 
+    ; Build the Page Directory Pointer Table.
+    lea eax, [es:di + 0x2000]         ; Put the address of the Page Directory in to EAX.
+    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writable flag.
+    mov [es:di + 0x1000], eax         ; Store the value of EAX as the first PDPTE.
+ 
+ 
+    ; Build the Page Directory.
+    lea eax, [es:di + 0x3000]         ; Put the address of the Page Table in to EAX.
+    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writeable flag.
+    mov [es:di + 0x2000], eax         ; Store to value of EAX as the first PDE.
+ 
+ 
+    push di                           ; Save DI for the time being.
+    lea di, [di + 0x3000]             ; Point DI to the page table.
+    mov eax, PAGE_PRESENT | PAGE_WRITE    ; Move the flags into EAX - and point it to 0x0000.
+ 
+ 
+    ; Build the Page Table.
+.LoopPageTable:
+    mov [es:di], eax
+    add eax, 0x1000
+    add di, 8
+    cmp eax, 0x200000                 ; If we did all 2MiB, end.
+    jb .LoopPageTable
+ 
+    pop di                            ; Restore DI.
+ 
+    ; Disable IRQs
+    mov al, 0xFF                      ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
+    out 0xA1, al
+    out 0x21, al
+ 
+    nop
+    nop
+ 
+    lidt [IDT]                        ; Load a zero length IDT so that any NMI causes a triple fault.
+ 
+    ; Enter long mode.
+    mov eax, 10100000b                ; Set the PAE and PGE bit.
+    mov cr4, eax
+ 
+    mov edx, edi                      ; Point CR3 at the PML4.
+    mov cr3, edx
+ 
+    mov ecx, 0xC0000080               ; Read from the EFER MSR. 
+    rdmsr    
+ 
+    or eax, 0x00000100                ; Set the LME bit.
+    wrmsr
+ 
+    mov ebx, cr0                      ; Activate long mode -
+    or ebx,0x80000001                 ; - by enabling paging and protection simultaneously.
+    mov cr0, ebx                    
+ 
+    lgdt [GDT.Pointer]                ; Load GDT.Pointer defined below.
+ 
+    jmp CODE_SEG:LongMode             ; Load CS with 64 bit segment and flush the instruction cache
+ 
+ 
+    ; Global Descriptor Table
+GDT:
+.Null:
+    dq 0x0000000000000000             ; Null Descriptor - should be present.
+ 
+.Code:
+    dq 0x00209A0000000000             ; 64-bit code descriptor (exec/read).
+    dq 0x0000920000000000             ; 64-bit data descriptor (read/write).
+ 
+ALIGN 4
+    dw 0                              ; Padding to make the "address of the GDT" field aligned on a 4-byte boundary
+ 
+.Pointer:
+    dw $ - GDT - 1                    ; 16-bit Size (Limit) of GDT.
+    dd GDT                            ; 32-bit Base Address of GDT. (CPU will zero extend to 64-bit)
+ 
+ 
+[BITS 64]      
+LongMode:
+    mov ax, DATA_SEG
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+ 
+    ; Blank out the screen to a blue color.
+    mov edi, 0xB8000
+    mov rcx, 500                      ; Since we are clearing uint64_t over here, we put the count as Count/4.
+    mov rax, 0x1F201F201F201F20       ; Set the value to set the screen to: Blue background, white foreground, blank spaces.
+    rep stosq                         ; Clear the entire screen. 
+ 
+    ; Display "Hello World!"
+    mov edi, 0x00b8000              
+ 
+    mov rax, 0x1F6C1F6C1F651F48    
+    mov [edi],rax
+ 
+    mov rax, 0x1F6F1F571F201F6F
+    mov [edi + 8], rax
+ 
+    mov rax, 0x1F211F641F6C1F72
+    mov [edi + 16], rax
+ 
+    jmp $
