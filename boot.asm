@@ -20,18 +20,11 @@ SECTION MBR
     mov dx, 0x184f
     int 0x10
 
-    ;写显卡地址输出字符串
-    mov ax, 0xb800
-    mov gs, ax
-    mov byte [gs:0x00], 'B'
-    mov byte [gs:0x01], 0xA4
-    mov byte [gs:0x02], 'O'
-    mov byte [gs:0x03], 0xA4
-    mov byte [gs:0x04], 'O'
-    mov byte [gs:0x05], 0xA4
-    mov byte [gs:0x06], 'T'
-    mov byte [gs:0x07], 0xA4
-    ; ---- 打印字符串end ----
+    mov	ax,	0x4F02
+    mov	bx,	0x4180
+    int 	10h
+    cmp	ax,	0x004F
+	jnz	Label_SET_SVGA_Mode_VESA_VBE_FAIL
 
     ;读取磁盘的loader
     mov eax, LOADER_START_SECTOR
@@ -41,6 +34,10 @@ SECTION MBR
     call ReadLoader
     ;now the loader is loaded at LOADER_BASE_ADDR
     jmp LOADER_BASE_ADDR
+
+Label_SET_SVGA_Mode_VESA_VBE_FAIL:
+
+	jmp	$
 
 ReadLoader:
 

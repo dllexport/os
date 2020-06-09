@@ -14,6 +14,12 @@ ALIGN 4
 IDT:
     .Length       dw 0
     .Base         dd 0
+ ALIGN 4
+    dw 0                              ; Padding to make the "address of the GDT" field aligned on a 4-byte boundary
+ 
+.Pointer:
+    dw $ - GDT - 1                    ; 16-bit Size (Limit) of GDT.
+    dd GDT                            ; 32-bit Base Address of GDT. (CPU will zero extend to 64-bit)
  
 ; Function to switch directly to long mode from real mode.
 ; Identity maps the first 2MiB.
@@ -47,27 +53,35 @@ SwitchToLongMode:
     or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writable flag.
     mov [es:di + 0x1000], eax         ; Store the value of EAX as the first PDPTE.
  
- 
+    ; 2MB PAGE
     ; Build the Page Directory.
-    lea eax, [es:di + 0x3000]         ; Put the address of the Page Table in to EAX.
-    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writeable flag.
+    mov eax, 0x000083
     mov [es:di + 0x2000], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0x200083
+    mov [es:di + 0x2008], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0x400083
+    mov [es:di + 0x2010], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0x600083
+    mov [es:di + 0x2018], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0x800083
+    mov [es:di + 0x2020], eax         ; Store to value of EAX as the first PDE.
  
- 
-    push di                           ; Save DI for the time being.
-    lea di, [di + 0x3000]             ; Point DI to the page table.
-    mov eax, PAGE_PRESENT | PAGE_WRITE    ; Move the flags into EAX - and point it to 0x0000.
- 
- 
-    ; Build the Page Table.
-.LoopPageTable:
-    mov [es:di], eax
-    add eax, 0x1000
-    add di, 8
-    cmp eax, 0x200000                 ; If we did all 2MiB, end.
-    jb .LoopPageTable
- 
-    pop di                            ; Restore DI.
+    mov eax, 0xe0000083
+    mov [es:di + 0x2028], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0200083
+    mov [es:di + 0x2030], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0400083
+    mov [es:di + 0x2038], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0600083
+    mov [es:di + 0x2040], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0800083
+    mov [es:di + 0x2048], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0a00083
+    mov [es:di + 0x2050], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0c00083
+    mov [es:di + 0x2058], eax         ; Store to value of EAX as the first PDE.
+    mov eax, 0xe0e00083
+    mov [es:di + 0x2060], eax         ; Store to value of EAX as the first PDE.
  
     ; Disable IRQs
     mov al, 0xFF                      ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
@@ -131,7 +145,7 @@ LongMode:
     mov rsp, 0xffff800000007E00
     mov rbp, rsp
 
-    mov rax, 0xffff800000a00000
+
     mov rbx, [rax]
     mov rax, KERNEL_START_SECTOR
     mov rbx, 0xffff800000100000

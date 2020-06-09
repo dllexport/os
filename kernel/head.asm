@@ -1,4 +1,3 @@
-SECTION HEAD
-
-extern _start
-    call _start
+extern Start_Kernel
+    call Start_Kernel
+    jmp $

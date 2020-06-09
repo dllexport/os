@@ -1,4 +1,7 @@
-all: boot.bin loader.bin
+all: boot.bin loader.bin kernel.bin
+
+kernel.bin:
+	cd ./kernel/ && make
 
 loader.bin:
 	nasm loader.asm -o loader.bin
@@ -16,3 +19,4 @@ run:
 
 clean:
 	rm -rf *.bin *.asm~ Makefile~ loader.bin boot.bin
+	cd ./kernel/ && make clean
