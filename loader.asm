@@ -3,8 +3,8 @@
 %define PAGE_PRESENT    (1 << 0)
 %define PAGE_WRITE      (1 << 1)
  
-%define CODE_SEG     0x0008
-%define DATA_SEG     0x0010
+%define CODE_SEG     0x0008 ; gdt[1]
+%define DATA_SEG     0x0010 ; gdt[2] (kernel data)
  
 SECTION LOADER vstart=LOADER_BASE_ADDR
 
@@ -37,10 +37,11 @@ SwitchToLongMode:
     ; Build the Page Map Level 4.
     ; es:di points to the Page Map Level 4 table.
     lea eax, [es:di + 0x1000]         ; Put the address of the Page Directory Pointer Table in to EAX.
-    or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writable flag.
+    or eax, 0x7 ; Or EAX with the flags - present flag, writable flag.
     mov [es:di], eax                  ; Store the value of EAX as the first PML4E.
  
- 
+    mov [es:di + 0x800], eax                  ; Store the value of EAX as the first PML4E.
+
     ; Build the Page Directory Pointer Table.
     lea eax, [es:di + 0x2000]         ; Put the address of the Page Directory in to EAX.
     or eax, PAGE_PRESENT | PAGE_WRITE ; Or EAX with the flags - present flag, writable flag.
@@ -106,9 +107,11 @@ GDT:
     dq 0x0000000000000000             ; Null Descriptor - should be present.
  
 .Code:
-    dq 0x00209A0000000000             ; 64-bit code descriptor (exec/read).
+    dq 0x0020980000000000             ; 64-bit code descriptor (exec/read).
     dq 0x0000920000000000             ; 64-bit data descriptor (read/write).
- 
+    dq 0x0020f80000000000             ; 64-bit data descriptor (read/write).
+    dq 0x0000f20000000000             ; 64-bit data descriptor (read/write).
+    times 10 dq 0
 ALIGN 4
     dw 0                              ; Padding to make the "address of the GDT" field aligned on a 4-byte boundary
  
@@ -125,23 +128,79 @@ LongMode:
     mov fs, ax
     mov gs, ax
     mov ss, ax
- 
-    ; Blank out the screen to a blue color.
-    mov edi, 0xB8000
-    mov rcx, 500                      ; Since we are clearing uint64_t over here, we put the count as Count/4.
-    mov rax, 0x1F201F201F201F20       ; Set the value to set the screen to: Blue background, white foreground, blank spaces.
-    rep stosq                         ; Clear the entire screen. 
- 
-    ; Display "Hello World!"
-    mov edi, 0x00b8000              
- 
-    mov rax, 0x1F6C1F6C1F651F48    
-    mov [edi],rax
- 
-    mov rax, 0x1F6F1F571F201F6F
-    mov [edi + 8], rax
- 
-    mov rax, 0x1F211F641F6C1F72
-    mov [edi + 16], rax
- 
-    jmp $
+    mov rsp, 0xffff800000007E00
+    mov rbp, rsp
+
+    mov rax, 0xffff800000a00000
+    mov rbx, [rax]
+    mov rax, KERNEL_START_SECTOR
+    mov rbx, 0xffff800000100000
+    ; 读取64个扇区
+    mov rcx, 64
+    call ReadLoader
+    jmp 0xffff800000100000
+
+ReadLoader:
+
+    mov esi, eax
+    mov rdi, rcx
+
+    ;讀寫硬盤:
+    ;第1步：設置要讀取的扇區數
+    mov rdx,0x1f2
+    mov al,cl
+    out dx,al            ;讀取的扇區數
+
+    mov eax,esi       ;恢復ax
+
+    ;第2步：將LBA地址存入0x1f3 ~ 0x1f6
+
+    ;LBA地址7~0位寫入端口0x1f3
+    mov dx,0x1f3                       
+    out dx,al                          
+
+    ;LBA地址15~8位寫入端口0x1f4
+    mov cl,8
+    shr eax,cl
+    mov dx,0x1f4
+    out dx,al
+
+    ;LBA地址23~16位寫入端口0x1f5
+    shr eax,cl
+    mov dx,0x1f5
+    out dx,al
+
+    shr eax,cl
+    and al,0x0f       ;lba第24~27位
+    or al,0xe0       ; 設置7～4位為1110,表示lba模式
+    mov dx,0x1f6
+    out dx,al
+
+    ;第3步：向0x1f7端口寫入讀命令，0x20 
+    mov dx,0x1f7
+    mov al,0x20                        
+    out dx,al
+
+    ;第4步：檢測硬盤狀態
+.not_ready:
+    ;同一端口，寫時表示寫入命令字，讀時表示讀入硬盤狀態
+    nop
+    in al,dx
+    and al,0x88       ;第4位為1表示硬盤控制器已准備好數據傳輸，第7位為1表示硬盤忙
+    cmp al,0x08
+    jnz .not_ready       ;若未准備好，繼續等。
+
+;第5步：從0x1f0端口讀數據
+    mov ax, di
+    mov dx, 256
+    mul dx
+    mov cx, ax       ; di為要讀取的扇區數，一個扇區有512字節，每次讀入一個字，
+               ; 共需di*512/2次，所以di*256
+    mov dx, 0x1f0
+.go_on_read:
+    in ax,dx
+    mov [rbx],ax
+    add rbx,2          
+    loop .go_on_read
+    ret
+
